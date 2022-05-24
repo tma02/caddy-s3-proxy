@@ -65,6 +65,9 @@ type S3Proxy struct {
 	// Path to a template file to use for generating browse dir html page
 	BrowseTemplate string
 
+	// Flag to enable auto clean urls
+	EnableCleanURL bool
+
 	// Mapping of HTTP error status to S3 keys or pass through option.
 	ErrorPages map[int]string `json:"error_pages,omitempty"`
 
@@ -467,6 +470,17 @@ func (p S3Proxy) GetHandler(w http.ResponseWriter, r *http.Request, fullPath str
 						zap.String("err", err.Error()),
 					)
 				}
+			}
+		}
+	}
+
+	// Add canonical link header if index was explicitly requested
+	if !isDir && len(p.IndexNames) > 0 {
+		for _, indexPage := range p.IndexNames {
+			if strings.HasSuffix(fullPath, indexPage) {
+				pathWithoutIndex := strings.TrimSuffix(fullPath, indexPage)
+				setStrHeader(w, "Link", makeAwsString("<"+r.Host+pathWithoutIndex+">; rel=\"canonical\""))
+				break
 			}
 		}
 	}
