@@ -83,6 +83,8 @@ parseLoop:
 			b.S3ForcePathStyle = true
 		case "use_accelerate":
 			b.S3UseAccelerate = true
+		case "enable_clean_url":
+			b.EnableCleanURL = true
 		case "browse":
 			b.EnableBrowse = true
 			args := h.RemainingArgs()
