@@ -170,6 +170,7 @@ func (p *S3Proxy) Provision(ctx caddy.Context) (err error) {
 		zap.Bool("enable_browse", p.EnableBrowse),
 		zap.Bool("force_path_style", p.S3ForcePathStyle),
 		zap.Bool("use_accelerate", p.S3UseAccelerate),
+		zap.Bool("enable_clean_url", p.EnableCleanURL),
 	)
 
 	return nil
