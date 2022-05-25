@@ -403,12 +403,14 @@ func (p S3Proxy) serveErrorPage(w http.ResponseWriter, s3Key string) error {
 func (p S3Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 	repl := r.Context().Value(caddy.ReplacerCtxKey).(*caddy.Replacer)
 
+	startTime := time.Now()
+
 	fullPath := joinPath(repl.ReplaceAll(p.Root, ""), r.URL.Path)
 
 	var err error
 	switch r.Method {
 	case http.MethodGet:
-		err = p.GetHandler(w, r, fullPath)
+		err = p.GetHandler(w, r, fullPath, startTime)
 	case http.MethodPut:
 		err = p.PutHandler(w, r, fullPath)
 	case http.MethodDelete:
@@ -416,6 +418,11 @@ func (p S3Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 	default:
 		err = caddyhttp.Error(http.StatusMethodNotAllowed, errors.New("method not allowed"))
 	}
+
+	p.log.Debug("request handler finished",
+		zap.Duration("time", time.Now().Sub(startTime)),
+	)
+
 	if err == nil {
 		// Success!
 		return nil
@@ -480,7 +487,7 @@ func (p S3Proxy) determineErrorsAction(statusCode int) (bool, bool, string) {
 	return false, s3Key != "", s3Key
 }
 
-func (p S3Proxy) GetHandler(w http.ResponseWriter, r *http.Request, fullPath string) error {
+func (p S3Proxy) GetHandler(w http.ResponseWriter, r *http.Request, fullPath string, startTime time.Time) error {
 	// If file is hidden - return 404
 	if fileHidden(fullPath, p.Hide) {
 		return caddyhttp.Error(http.StatusNotFound, nil)
@@ -520,8 +527,12 @@ func (p S3Proxy) GetHandler(w http.ResponseWriter, r *http.Request, fullPath str
 		}
 	}
 
+	p.log.Debug("index resolution finished",
+		zap.Duration("time", time.Now().Sub(startTime)),
+	)
+
 	// Add canonical link header if index was explicitly requested
-	if !isDir && len(p.IndexNames) > 0 {
+	if obj != nil && !isDir && len(p.IndexNames) > 0 {
 		for _, indexPage := range p.IndexNames {
 			if strings.HasSuffix(r.URL.Path, indexPage) {
 				// Use request url since fullPath has root prefixed
@@ -532,6 +543,10 @@ func (p S3Proxy) GetHandler(w http.ResponseWriter, r *http.Request, fullPath str
 			}
 		}
 	}
+
+	p.log.Debug("canonical link for index finished",
+		zap.Duration("time", time.Now().Sub(startTime)),
+	)
 
 	if isDir && !p.EnableBrowse && p.EnableCleanURL {
 		// check files after stripping trailing slash
@@ -546,6 +561,10 @@ func (p S3Proxy) GetHandler(w http.ResponseWriter, r *http.Request, fullPath str
 			return nil
 		}
 	}
+	p.log.Debug("strip trailing slash test finished",
+		zap.Duration("time", time.Now().Sub(startTime)),
+	)
+
 	// If this is still a dir then browse or throw an error
 	if isDir {
 		if p.EnableBrowse {
@@ -555,6 +574,9 @@ func (p S3Proxy) GetHandler(w http.ResponseWriter, r *http.Request, fullPath str
 			return caddyhttp.Error(http.StatusNotFound, err)
 		}
 	}
+	p.log.Debug("directory listing check finished",
+		zap.Duration("time", time.Now().Sub(startTime)),
+	)
 
 	// Get the obj from S3 (skip if we already did when looking for an index)
 	if obj == nil {
@@ -568,12 +590,19 @@ func (p S3Proxy) GetHandler(w http.ResponseWriter, r *http.Request, fullPath str
 					setStrHeader(w, "Link", makeAwsString("<"+requestUrlWithoutHtmlExt+">; rel=\"canonical\""))
 				}
 			}
+			p.log.Debug("canonical link to clean url finished",
+				zap.Duration("time", time.Now().Sub(startTime)),
+			)
 			if err != nil && !isDir && convertToCaddyError(err).StatusCode == http.StatusNotFound &&
 				pathHasNoFileExtension(fullPath) {
 				// try to get path with .html
 				obj, err = p.getS3Object(p.Bucket, fullPath+".html", r.Header)
 			}
-			if err != nil && !isDir && convertToCaddyError(err).StatusCode == http.StatusNotFound {
+			p.log.Debug("add .html suffix test finished",
+				zap.Duration("time", time.Now().Sub(startTime)),
+			)
+			if err != nil && !isDir && convertToCaddyError(err).StatusCode == http.StatusNotFound &&
+				pathHasNoFileExtension(fullPath) {
 				// check files after adding trailing slash
 				pathWithTrailingSlash := fullPath + "/"
 				_, errWithTrailingSlash := p.headS3Object(p.Bucket, pathWithTrailingSlash+"index.html", r.Header)
@@ -585,6 +614,9 @@ func (p S3Proxy) GetHandler(w http.ResponseWriter, r *http.Request, fullPath str
 					return nil
 				}
 			}
+			p.log.Debug("add trailing slash test finished",
+				zap.Duration("time", time.Now().Sub(startTime)),
+			)
 		}
 	}
 	if err != nil {
