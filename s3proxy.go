@@ -533,16 +533,6 @@ func (p S3Proxy) GetHandler(w http.ResponseWriter, r *http.Request, fullPath str
 		}
 	}
 
-	// If this is still a dir then browse or throw an error
-	if isDir {
-		if p.EnableBrowse {
-			return p.BrowseHandler(w, r, fullPath)
-		} else {
-			err = errors.New("can not view a directory")
-			return caddyhttp.Error(http.StatusForbidden, err)
-		}
-	}
-
 	// Get the obj from S3 (skip if we already did when looking for an index)
 	if obj == nil {
 		obj, err = p.getS3Object(p.Bucket, fullPath, r.Header)
@@ -585,6 +575,15 @@ func (p S3Proxy) GetHandler(w http.ResponseWriter, r *http.Request, fullPath str
 					return nil
 				}
 			}
+		}
+	}
+	// If this is still a dir then browse or throw an error
+	if isDir {
+		if p.EnableBrowse {
+			return p.BrowseHandler(w, r, fullPath)
+		} else {
+			err = errors.New("directory listing is not available")
+			return caddyhttp.Error(http.StatusForbidden, err)
 		}
 	}
 	if err != nil {
