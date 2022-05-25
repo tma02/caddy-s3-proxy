@@ -538,7 +538,7 @@ func (p S3Proxy) GetHandler(w http.ResponseWriter, r *http.Request, fullPath str
 		obj, err = p.getS3Object(p.Bucket, fullPath, r.Header)
 		if p.EnableCleanURL {
 			if err == nil && isHtmlExtension {
-				_, errWithoutExt := p.headS3Object(p.Bucket, fullPath, r.Header)
+				_, errWithoutExt := p.headS3Object(p.Bucket, strings.TrimSuffix(fullPath, ".html"), r.Header)
 				if errWithoutExt != nil && convertToCaddyError(err).StatusCode == http.StatusNotFound {
 					// file without .html not found, add canonical link
 					requestUrlWithoutHtmlExt := strings.TrimSuffix(r.URL.String(), ".html"+r.URL.RawQuery)
@@ -550,7 +550,7 @@ func (p S3Proxy) GetHandler(w http.ResponseWriter, r *http.Request, fullPath str
 				// try to get path with .html
 				obj, err = p.getS3Object(p.Bucket, fullPath+".html", r.Header)
 			}
-			if err != nil && isDir && !p.EnableBrowse {
+			if isDir && !p.EnableBrowse {
 				// check files after stripping trailing slash
 				pathWithoutTrailingSlash := strings.TrimSuffix(fullPath, "/")
 				_, errWithoutTrailingSlash := p.headS3Object(p.Bucket, pathWithoutTrailingSlash, r.Header)
