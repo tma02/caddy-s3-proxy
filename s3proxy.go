@@ -214,6 +214,44 @@ func (p S3Proxy) getS3Object(bucket string, path string, headers http.Header) (*
 	return p.client.GetObject(oi)
 }
 
+func (p S3Proxy) headS3Object(bucket string, path string, headers http.Header) (*s3.HeadObjectOutput, error) {
+	oi := &s3.HeadObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(path),
+	}
+
+	if rg := headers.Get("Range"); rg != "" {
+		oi = oi.SetRange(rg)
+	}
+	if ifMatch := headers.Get("If-Match"); ifMatch != "" {
+		oi = oi.SetIfMatch(ifMatch)
+	}
+	if ifNoneMatch := headers.Get("If-None-Match"); ifNoneMatch != "" {
+		oi = oi.SetIfNoneMatch(ifNoneMatch)
+	}
+	if ifModifiedSince := headers.Get("If-Modified-Since"); ifModifiedSince != "" {
+		t, err := time.Parse(http.TimeFormat, ifModifiedSince)
+		if err == nil {
+			oi = oi.SetIfModifiedSince(t)
+		}
+	}
+	if ifUnmodifiedSince := headers.Get("If-Unmodified-Since"); ifUnmodifiedSince != "" {
+		t, err := time.Parse(http.TimeFormat, ifUnmodifiedSince)
+		if err == nil {
+			oi = oi.SetIfUnmodifiedSince(t)
+		}
+	}
+
+	p.log.Debug("get from S3",
+		zap.String("bucket", bucket),
+		zap.String("key", path),
+	)
+
+	// TODO: HeadObject could return the aws error InternalError, if that happens it is best practice to retry the
+	// the call.  That retry logic should go here...
+	return p.client.HeadObject(oi)
+}
+
 func joinPath(root string, uriPath string) string {
 	isDir := uriPath[len(uriPath)-1:] == "/"
 	newPath := path.Join(root, uriPath)
@@ -342,6 +380,12 @@ func (p S3Proxy) writeResponseFromGetObject(w http.ResponseWriter, obj *s3.GetOb
 	return err
 }
 
+func (p S3Proxy) writeResponseForRedirect(w http.ResponseWriter, location string) {
+	setStrHeader(w, "Location", makeAwsString(location))
+
+	w.WriteHeader(http.StatusFound)
+}
+
 func (p S3Proxy) serveErrorPage(w http.ResponseWriter, s3Key string) error {
 	obj, err := p.getS3Object(p.Bucket, s3Key, nil)
 	if err != nil {
@@ -443,6 +487,7 @@ func (p S3Proxy) GetHandler(w http.ResponseWriter, r *http.Request, fullPath str
 	}
 
 	isDir := strings.HasSuffix(fullPath, "/")
+	isHtmlExtension := strings.HasSuffix(fullPath, ".html")
 	var obj *s3.GetObjectOutput
 	var err error
 
@@ -455,7 +500,7 @@ func (p S3Proxy) GetHandler(w http.ResponseWriter, r *http.Request, fullPath str
 				// We found an index!
 				isDir = false
 				break
-			} else {
+			} else if caddyErr.StatusCode != 404 {
 				logIt := true
 				if aerr, ok := err.(awserr.Error); ok {
 					// Getting no such key here could be rather common
@@ -478,9 +523,11 @@ func (p S3Proxy) GetHandler(w http.ResponseWriter, r *http.Request, fullPath str
 	// Add canonical link header if index was explicitly requested
 	if !isDir && len(p.IndexNames) > 0 {
 		for _, indexPage := range p.IndexNames {
-			if strings.HasSuffix(fullPath, indexPage) {
-				pathWithoutIndex := strings.TrimSuffix(fullPath, indexPage)
-				setStrHeader(w, "Link", makeAwsString("<"+r.Host+pathWithoutIndex+">; rel=\"canonical\""))
+			if strings.HasSuffix(r.URL.Path, indexPage) {
+				// Use request url since fullPath has root prefixed
+				requestUrlWithoutIndex := strings.TrimSuffix(r.URL.String(), indexPage+r.URL.RawQuery)
+				setStrHeader(w, "Link",
+					makeAwsString("<"+requestUrlWithoutIndex+">; rel=\"canonical\""))
 				break
 			}
 		}
@@ -499,6 +546,46 @@ func (p S3Proxy) GetHandler(w http.ResponseWriter, r *http.Request, fullPath str
 	// Get the obj from S3 (skip if we already did when looking for an index)
 	if obj == nil {
 		obj, err = p.getS3Object(p.Bucket, fullPath, r.Header)
+		if p.EnableCleanURL {
+			if err == nil && isHtmlExtension {
+				_, errWithoutExt := p.headS3Object(p.Bucket, fullPath, r.Header)
+				if errWithoutExt != nil && convertToCaddyError(err).StatusCode == http.StatusNotFound {
+					// file without .html not found, add canonical link
+					requestUrlWithoutHtmlExt := strings.TrimSuffix(r.URL.String(), ".html"+r.URL.RawQuery)
+					setStrHeader(w, "Link", makeAwsString("<"+requestUrlWithoutHtmlExt+">; rel=\"canonical\""))
+				}
+			}
+			if err != nil && !isDir && convertToCaddyError(err).StatusCode == http.StatusNotFound &&
+				pathHasNoFileExtension(fullPath) {
+				// try to get path with .html
+				obj, err = p.getS3Object(p.Bucket, fullPath+".html", r.Header)
+			}
+			if err != nil && isDir && convertToCaddyError(err).StatusCode == http.StatusNotFound {
+				// check files after stripping trailing slash
+				pathWithoutTrailingSlash := strings.TrimSuffix(fullPath, "/")
+				_, errWithoutTrailingSlash := p.headS3Object(p.Bucket, pathWithoutTrailingSlash, r.Header)
+				_, errWithoutTrailingSlashWithHtmlExt :=
+					p.headS3Object(p.Bucket, pathWithoutTrailingSlash+".html", r.Header)
+				if errWithoutTrailingSlash == nil || errWithoutTrailingSlashWithHtmlExt == nil {
+					// at least some file exists, redirect to url without trailing slash
+					requestUrlWithoutTrailingSlash := strings.TrimSuffix(r.URL.String(), "/"+r.URL.RawQuery)
+					p.writeResponseForRedirect(w, requestUrlWithoutTrailingSlash)
+					return nil
+				}
+			}
+			if err != nil && !isDir && convertToCaddyError(err).StatusCode == http.StatusNotFound {
+				// check files after adding trailing slash
+				pathWithTrailingSlash := fullPath + "/"
+				_, errWithTrailingSlash := p.headS3Object(p.Bucket, pathWithTrailingSlash+"index.html", r.Header)
+				if errWithTrailingSlash == nil {
+					// at least some file exists, redirect to url with trailing slash
+					requestUrlWithTrailingSlash :=
+						strings.TrimSuffix(r.URL.String(), r.URL.RawQuery) + "/" + r.URL.RawQuery
+					p.writeResponseForRedirect(w, requestUrlWithTrailingSlash)
+					return nil
+				}
+			}
+		}
 	}
 	if err != nil {
 		caddyErr := convertToCaddyError(err)
@@ -533,6 +620,18 @@ func setTimeHeader(w http.ResponseWriter, key string, value *time.Time) {
 	if value != nil && !reflect.DeepEqual(*value, time.Time{}) {
 		w.Header().Add(key, value.UTC().Format(http.TimeFormat))
 	}
+}
+
+func pathHasNoFileExtension(path string) bool {
+	for i := range path {
+		reversedIndex := len(path) - i - 1
+		if path[reversedIndex] == '/' {
+			return true
+		} else if path[reversedIndex] == '.' {
+			return false
+		}
+	}
+	return true
 }
 
 // fileHidden returns true if filename is hidden
