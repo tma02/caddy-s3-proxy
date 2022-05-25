@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
-	"io"
 	"io/ioutil"
 	"net/http"
 	"path"
@@ -374,7 +373,8 @@ func (p S3Proxy) writeResponseFromGetObject(w http.ResponseWriter, obj *s3.GetOb
 	if obj.Body != nil {
 		// io.Copy will set Content-Length
 		w.Header().Del("Content-Length")
-		_, err = io.Copy(w, obj.Body)
+		//_, err = io.Copy(w, obj.Body)
+		err = p.copyResponse(w, obj.Body, -1)
 	}
 
 	return err
