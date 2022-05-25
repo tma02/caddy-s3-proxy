@@ -375,6 +375,9 @@ func (p S3Proxy) writeResponseFromGetObject(w http.ResponseWriter, obj *s3.GetOb
 		w.Header().Del("Content-Length")
 		//_, err = io.Copy(w, obj.Body)
 		err = p.copyResponse(w, obj.Body, -1)
+		if fl, ok := w.(http.Flusher); ok {
+			fl.Flush()
+		}
 	}
 
 	return err
