@@ -583,7 +583,7 @@ func (p S3Proxy) GetHandler(w http.ResponseWriter, r *http.Request, fullPath str
 			return p.BrowseHandler(w, r, fullPath)
 		} else {
 			err = errors.New("directory listing is not available")
-			return caddyhttp.Error(http.StatusForbidden, err)
+			return caddyhttp.Error(http.StatusNotFound, err)
 		}
 	}
 	if err != nil {
