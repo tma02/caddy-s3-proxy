@@ -550,7 +550,7 @@ func (p S3Proxy) GetHandler(w http.ResponseWriter, r *http.Request, fullPath str
 				// try to get path with .html
 				obj, err = p.getS3Object(p.Bucket, fullPath+".html", r.Header)
 			}
-			if err != nil && isDir && convertToCaddyError(err).StatusCode == http.StatusNotFound {
+			if err != nil && isDir && !p.EnableBrowse {
 				// check files after stripping trailing slash
 				pathWithoutTrailingSlash := strings.TrimSuffix(fullPath, "/")
 				_, errWithoutTrailingSlash := p.headS3Object(p.Bucket, pathWithoutTrailingSlash, r.Header)
