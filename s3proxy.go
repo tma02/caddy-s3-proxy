@@ -533,6 +533,29 @@ func (p S3Proxy) GetHandler(w http.ResponseWriter, r *http.Request, fullPath str
 		}
 	}
 
+	if isDir && !p.EnableBrowse && p.EnableCleanURL {
+		// check files after stripping trailing slash
+		pathWithoutTrailingSlash := strings.TrimSuffix(fullPath, "/")
+		_, errWithoutTrailingSlash := p.headS3Object(p.Bucket, pathWithoutTrailingSlash, r.Header)
+		_, errWithoutTrailingSlashWithHtmlExt :=
+			p.headS3Object(p.Bucket, pathWithoutTrailingSlash+".html", r.Header)
+		if errWithoutTrailingSlash == nil || errWithoutTrailingSlashWithHtmlExt == nil {
+			// at least some file exists, redirect to url without trailing slash
+			requestUrlWithoutTrailingSlash := strings.TrimSuffix(r.URL.String(), "/"+r.URL.RawQuery)
+			p.writeResponseForRedirect(w, requestUrlWithoutTrailingSlash)
+			return nil
+		}
+	}
+	// If this is still a dir then browse or throw an error
+	if isDir {
+		if p.EnableBrowse {
+			return p.BrowseHandler(w, r, fullPath)
+		} else {
+			err = errors.New("directory listing is not available")
+			return caddyhttp.Error(http.StatusNotFound, err)
+		}
+	}
+
 	// Get the obj from S3 (skip if we already did when looking for an index)
 	if obj == nil {
 		obj, err = p.getS3Object(p.Bucket, fullPath, r.Header)
@@ -550,19 +573,6 @@ func (p S3Proxy) GetHandler(w http.ResponseWriter, r *http.Request, fullPath str
 				// try to get path with .html
 				obj, err = p.getS3Object(p.Bucket, fullPath+".html", r.Header)
 			}
-			if isDir && !p.EnableBrowse {
-				// check files after stripping trailing slash
-				pathWithoutTrailingSlash := strings.TrimSuffix(fullPath, "/")
-				_, errWithoutTrailingSlash := p.headS3Object(p.Bucket, pathWithoutTrailingSlash, r.Header)
-				_, errWithoutTrailingSlashWithHtmlExt :=
-					p.headS3Object(p.Bucket, pathWithoutTrailingSlash+".html", r.Header)
-				if errWithoutTrailingSlash == nil || errWithoutTrailingSlashWithHtmlExt == nil {
-					// at least some file exists, redirect to url without trailing slash
-					requestUrlWithoutTrailingSlash := strings.TrimSuffix(r.URL.String(), "/"+r.URL.RawQuery)
-					p.writeResponseForRedirect(w, requestUrlWithoutTrailingSlash)
-					return nil
-				}
-			}
 			if err != nil && !isDir && convertToCaddyError(err).StatusCode == http.StatusNotFound {
 				// check files after adding trailing slash
 				pathWithTrailingSlash := fullPath + "/"
@@ -575,15 +585,6 @@ func (p S3Proxy) GetHandler(w http.ResponseWriter, r *http.Request, fullPath str
 					return nil
 				}
 			}
-		}
-	}
-	// If this is still a dir then browse or throw an error
-	if isDir {
-		if p.EnableBrowse {
-			return p.BrowseHandler(w, r, fullPath)
-		} else {
-			err = errors.New("directory listing is not available")
-			return caddyhttp.Error(http.StatusNotFound, err)
 		}
 	}
 	if err != nil {
